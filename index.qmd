@@ -1,0 +1,46 @@
+---
+title: "About Me"
+---
+
+Hello! My name is LeonardK, and I am an MBA student at Baruch College.
+
+My academic and professional interests lie at the intersection of business strategy, analytics, and technology. I am particularly interested in how data-driven decision-making can help organizations identify opportunities, improve operational performance, and address complex business problems.
+
+This website serves as a portfolio for my work in STA 9750, where I will document projects and analyses completed throughout the semester using tools such as R, Quarto, Git, and GitHub.
+
+Outside of coursework, I enjoy expanding my knowledge of emerging technologies, financial markets, and the evolving role of analytics in business.
+
+
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+
+if(!require("leaflet")){
+    options(repos=c(CRAN="https://cloud.r-project.org"))
+    install.packages("leaflet")
+    stopifnot(require("leaflet"))
+}
+
+baruch_longitude <- -73.98333
+baruch_latitude  <- +40.74028
+
+leaflet() |>
+  addTiles() |>
+  setView(baruch_longitude, baruch_latitude, zoom=17) |>
+  addPopups(baruch_longitude, baruch_latitude, 
+            "I am a Master's student at <b>Baruch College</b>!")
+```
+
+
+
+
+
+```{r}
+#| include: false
+1+1
+```
+--------------
+Last Updated: `r format(Sys.time(), "%A %m %d, %Y at %H:%M%p")`
+
