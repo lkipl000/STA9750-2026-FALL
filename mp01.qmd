@@ -1,0 +1,2880 @@
+---
+title: "Mini-Project #01 Netflix Viewing Data Analysis"
+format:
+  html:
+    theme: sandstone
+    toc: true
+    output-dir: docs
+editor: source
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+## Task 1: Data Acquisition
+
+```{r}
+#| label: acquire-netflix-data
+
+#' Acquiring and Standardizing Netflix What We Watched Reports
+#'
+#' In this section, I am developing a reproducible data acquisition
+#' function to retrieve, consolidate, and standardize Netflix's
+#' publicly available "What We Watched" engagement reports.
+#'
+#' My objective is to construct a comprehensive longitudinal dataset
+#' that facilitates the examination of Netflix viewing patterns
+#' across successive semiannual reporting periods.
+#'
+#' Rather than manually downloading individual Excel files, I am
+#' implementing an automated retrieval process that identifies
+#' the relevant download links directly from Netflix's official
+#' publication pages.
+#'
+#' This approach is particularly important because Netflix distributes
+#' its reports through a Content Delivery Network (CDN), where file
+#' URLs may contain dynamically generated identifiers.
+#'
+#' Following acquisition, I am integrating the individual datasets,
+#' standardizing temporal variables, addressing missing observations,
+#' and transforming relevant attributes into analytically useful formats.
+
+
+load_netflix_data <- function() {
+
+  # Loading the libraries required for my data acquisition workflow.
+  #
+  # I am using tidyverse for data manipulation, transformation,
+  # and functional programming operations.
+  #
+  # I am incorporating rvest to extract Excel download links
+  # from Netflix's official publication webpages.
+  #
+  # I am using readxl to import the Excel reports, while fs
+  # provides consistent file-system and directory management.
+
+  library(tidyverse)
+  library(rvest)
+  library(readxl)
+  library(fs)
+
+
+  # Establishing a dedicated directory for my Netflix source files.
+  #
+  # I am organizing the downloaded reports within data/mp01
+  # to maintain a structured and reproducible project environment.
+  #
+  # Before proceeding, I am checking whether this directory exists.
+  # If it does not, I am creating it automatically to prevent
+  # file-storage errors during subsequent downloads.
+
+  data_dir <- path("data", "mp01")
+
+  if (!dir_exists(data_dir)) {
+    dir_create(
+      data_dir,
+      showWarnings = FALSE,
+      recurse = TRUE
+    )
+  }
+
+
+  # Identifying the official Netflix engagement report webpages.
+  #
+  # I am constructing a named list containing the publication URLs
+  # corresponding to each semiannual reporting period.
+  #
+  # By explicitly associating each URL with its reporting period,
+  # I am preserving the temporal provenance of every observation.
+  #
+  # This structure will subsequently enable me to investigate
+  # changes in audience engagement across reporting periods,
+  # rather than relying exclusively on aggregated viewing totals.
+
+  NETFLIX_URLS <- list(
+    `2023H1` = "https://about.netflix.com/news/what-we-watched-a-netflix-engagement-report",
+    `2023H2` = "https://about.netflix.com/news/what-we-watched-the-second-half-of-2023",
+    `2024H1` = "https://about.netflix.com/news/what-we-watched-the-first-half-of-2024",
+    `2024H2` = "https://about.netflix.com/news/what-we-watched-the-second-half-of-2024",
+    `2025H1` = "https://about.netflix.com/news/what-we-watched-the-first-half-of-2025",
+    `2025H2` = "https://about.netflix.com/news/what-we-watched-the-second-half-of-2025",
+    `2026H1` = "https://about.netflix.com/news/what-we-watched-the-first-half-of-2026"
+  )
+
+
+  # Developing a conditional file-download function.
+  #
+  # I am implementing this helper function to avoid downloading
+  # files that are already available in my local project directory.
+  #
+  # Specifically, I am checking whether the destination file exists
+  # before initiating a download.
+  #
+  # This conditional approach minimizes redundant network requests,
+  # improves computational efficiency, and supports reproducibility
+  # when I rerun my analysis.
+  #
+  # I am also specifying binary download mode to preserve
+  # the integrity of the Excel files.
+
+  download_if_needed <- function(url, local) {
+
+    if (!file_exists(local)) {
+      download.file(
+        url,
+        local,
+        quiet = TRUE,
+        mode = "wb"
+      )
+    }
+
+    return(local)
+  }
+
+
+  # Extracting the Excel download links from Netflix's webpages.
+  #
+  # I am iterating over the publication URLs and reading their
+  # underlying HTML content using read_html().
+  #
+  # Because the Excel files are not referenced through fixed URLs,
+  # I am using an XPath expression to identify hyperlinks
+  # containing the .xlsx file extension.
+  #
+  # I am subsequently extracting the hyperlink destinations
+  # and organizing them into a structured dataset containing
+  # the reporting period and corresponding download URL.
+
+  NETFLIX_URLS |>
+    map(read_html) |>
+    map(
+      html_element,
+      xpath = "//a[contains(@href, '.xlsx')]"
+    ) |>
+    map_chr(html_attr, "href") |>
+    enframe("period", "url") |>
+
+
+    # Downloading and importing the semiannual Excel reports.
+    #
+    # I am generating a standardized local filename for each
+    # reporting period and downloading the corresponding file
+    # only when it is not already stored locally.
+    #
+    # Afterward, I am importing each Excel workbook using read_excel().
+    #
+    # I am skipping the first three rows because they contain
+    # preliminary report information rather than the analytical
+    # observations required for my investigation.
+    #
+    # I am also interpreting asterisks as missing values during
+    # import and converting release dates into R's Date format.
+
+    mutate(
+      path = path(data_dir, paste0(period, ".xlsx")),
+
+      path = map2(
+        url,
+        path,
+        download_if_needed
+      ),
+
+      data = map(
+        path,
+        read_excel,
+        skip = 3,
+        na = "*"
+      ),
+
+      data = map(
+        data,
+        \(x) x |>
+          mutate(
+            `Release Date` = as.Date(`Release Date`)
+          )
+      )
+    ) |>
+
+
+    # Consolidating the individual reporting-period datasets.
+    #
+    # I am vertically combining the imported reports into
+    # one unified dataset using unnest().
+    #
+    # This consolidation allows me to analyze viewing behavior
+    # across multiple reporting periods within a consistent
+    # analytical framework.
+    #
+    # I am removing the temporary URL and file-path columns
+    # because they are no longer necessary for subsequent analysis.
+
+    unnest(data) |>
+    select(-url, -path) |>
+
+
+    # Constructing standardized temporal variables.
+    #
+    # I am extracting the calendar year and reporting half
+    # from the period identifier.
+    #
+    # I am then generating explicit beginning and ending dates
+    # for each six-month reporting interval.
+    #
+    # These variables are essential for examining longitudinal
+    # patterns, comparing reporting periods, and identifying
+    # changes in Netflix audience engagement over time.
+
+    mutate(
+      year = str_sub(period, 1, 4),
+
+      half = str_sub(period, start = 6),
+
+      period_start = make_date(
+        year,
+        if_else(half == 1, 1, 7),
+        1
+      ),
+
+      period_end = make_date(
+        year,
+        if_else(half == 1, 6, 12),
+        if_else(half == 1, 30, 31)
+      )
+    ) |>
+
+
+    # Removing observations without recorded viewing hours.
+    #
+    # I am excluding records where Hours Viewed is missing
+    # because this variable represents a fundamental measure
+    # of audience engagement in my analysis.
+    #
+    # Retaining observations without this information would
+    # limit the interpretability of subsequent calculations
+    # involving viewing intensity and content popularity.
+
+    filter(!is.na(`Hours Viewed`)) |>
+
+
+    # Identifying live events and standardizing content runtime.
+    #
+    # I am distinguishing live-event programming by detecting
+    # runtime values containing an asterisk following a
+    # time-formatted expression.
+    #
+    # I am then removing the asterisk and converting runtime
+    # from hours-and-minutes notation into total minutes.
+    #
+    # This transformation establishes a consistent numerical
+    # measure of content duration, which I can subsequently
+    # use to investigate viewing preferences for shorter
+    # versus longer programming.
+
+    mutate(
+      live_event = !is.na(Runtime) &
+        str_detect(Runtime, "\\d+:\\d+\\*"),
+
+      clean_time = str_remove(
+        Runtime,
+        fixed("*")
+      ),
+
+      Runtime = 60 * hour(hm(clean_time)) +
+        minute(hm(clean_time))
+    ) |>
+
+
+    # Removing the intermediate runtime transformation variable.
+    #
+    # I am retaining the standardized numerical runtime
+    # while eliminating the temporary character-based field
+    # used during the conversion process.
+
+    select(-clean_time) |>
+
+
+    # Addressing missing runtime values and standardizing titles.
+    #
+    # I am replacing missing runtime observations with the
+    # average available runtime for the corresponding title.
+    #
+    # By performing this calculation within each title,
+    # I am attempting to preserve title-specific characteristics
+    # rather than substituting a single overall dataset average.
+    #
+    # I am also normalizing title text by transliterating
+    # accented characters into their closest ASCII equivalents.
+    #
+    # Additionally, I am removing supplementary title information,
+    # unsupported trailing characters, and unnecessary whitespace.
+    #
+    # These transformations help reduce inconsistencies that
+    # could otherwise interfere with grouping, comparisons,
+    # and identification of recurring titles.
+
+    mutate(
+      Runtime = coalesce(
+        Runtime,
+        mean(Runtime, na.rm = TRUE)
+      ),
+
+      .by = Title,
+
+      Title = stringi::stri_trans_general(
+        Title,
+        "Latin-ASCII"
+      ),
+
+      Title = str_remove(
+        Title,
+        " // .*"
+      ),
+
+      Title = str_remove(
+        Title,
+        "[^[:ascii:]].*"
+      ),
+
+      Title = str_trim(Title)
+    ) |>
+
+
+    # Excluding records with empty content titles.
+    #
+    # I am removing observations that no longer contain
+    # a valid title after the standardization process.
+    #
+    # This ensures that my analytical dataset retains
+    # identifiable content records for subsequent comparisons.
+
+    filter_out(Title == "") |>
+
+
+    # Selecting and organizing the final analytical variables.
+    #
+    # I am retaining the variables most relevant to my
+    # investigation of Netflix engagement patterns.
+    #
+    # These include reporting periods, content titles,
+    # runtime, views, total viewing hours, release dates,
+    # global availability, and live-event classification.
+    #
+    # I am also arranging the columns into a logical order
+    # to improve readability and facilitate downstream
+    # exploratory analysis and visualization.
+
+    select(
+      year,
+      period,
+      period_start,
+      period_end,
+      Title,
+      -half,
+      Runtime,
+      Views,
+      `Hours Viewed`,
+      `Release Date`,
+      `Available Globally?`,
+      live_event
+    )
+}
+
+
+# Executing my Netflix data acquisition function.
+#
+# I am calling load_netflix_data() to retrieve and process
+# the engagement reports into a consolidated dataset.
+#
+# I am assigning the resulting dataset to NETFLIX_DATA,
+# which will serve as the primary analytical foundation
+# for the subsequent stages of my mini-project.
+#
+# By centralizing the acquisition and cleaning operations
+# within a single function, I am making my workflow
+# more transparent, reproducible, and easier to maintain.
+
+NETFLIX_DATA <- load_netflix_data()
+```
+
+## Task 2: Fixing Column Titles
+
+```{r}
+#| label: clean-column-names
+
+# Standardizing Netflix Dataset Column Names
+#
+# In this section, I am standardizing the column names in my
+# NETFLIX_DATA dataset to establish a consistent naming convention
+# for subsequent data manipulation and analytical procedures.
+#
+# I am using the rename() function from dplyr to convert the
+# original Netflix variable names into lowercase snake_case format.
+#
+# Specifically, I am replacing spaces with underscores and
+# eliminating inconsistent capitalization to improve readability,
+# simplify variable referencing, and minimize potential errors
+# during subsequent transformations.
+#
+# I am retaining the original data values and observations,
+# ensuring that this operation exclusively modifies the
+# nomenclature rather than the substantive dataset.
+#
+# This standardization will facilitate more efficient data
+# exploration, statistical computations, and visualizations
+# throughout the remaining stages of my mini-project.
+
+NETFLIX_DATA <- NETFLIX_DATA |>
+  rename(
+    title = Title,
+    runtime = Runtime,
+    views = Views,
+    hours_viewed = `Hours Viewed`,
+    release_date = `Release Date`,
+    available_globally = `Available Globally?`
+  )
+```
+
+## Task 3: Fixing Column Types
+
+```{r}
+#| label: clean-column-types
+
+# Standardizing Data Types for Analytical Consistency
+#
+# In this section, I am refining the data types of selected
+# variables within my NETFLIX_DATA dataset to ensure consistency,
+# computational accuracy, and compatibility with subsequent
+# statistical analyses and visualizations.
+#
+# I am using the mutate() function from dplyr to transform
+# variables into data types that appropriately reflect their
+# underlying analytical meaning.
+#
+# First, I am converting the year variable into an integer
+# using as.integer(). This transformation ensures that the
+# reporting year is represented numerically rather than as
+# a character string, facilitating chronological comparisons,
+# temporal aggregations, and longitudinal trend analysis.
+#
+# Second, I am transforming the available_globally variable
+# into a logical (Boolean) indicator by evaluating whether
+# its original value equals "Yes".
+#
+# Under this transformation, titles designated as globally
+# available are assigned TRUE, while those with other
+# nonmissing values are assigned FALSE. Missing values
+# remain NA, preserving uncertainty in the original data.
+#
+# This binary classification will allow me to distinguish
+# between globally available and geographically restricted
+# content when examining differences in audience engagement.
+#
+# By explicitly standardizing these variable types, I am
+# strengthening the structural integrity of my dataset,
+# reducing potential inconsistencies, and establishing
+# a more reliable foundation for subsequent analytical tasks.
+#
+# Finally, I am updating NETFLIX_DATA with these transformations
+# while preserving all other variables and observations.
+
+NETFLIX_DATA <- NETFLIX_DATA |>
+  mutate(
+    year = as.integer(year),
+    available_globally = available_globally == "Yes"
+  )
+```
+
+## Task 4: Initial Exploratory Data Analysis
+
+### Dataset Structure and Variable Types
+
+```{r}
+#| label: task4-glimpse
+
+# Examining the Structure and Composition of My Netflix Dataset
+#
+# In this section, I am conducting a preliminary structural
+# examination of my cleaned and standardized NETFLIX_DATA dataset
+# to assess its overall organization and analytical readiness.
+#
+# I am using the glimpse() function from dplyr to obtain a
+# concise overview of the dataset, including its dimensions,
+# variable names, data types, and representative observations.
+#
+# Specifically, I am verifying that the column names conform
+# to my established snake_case naming convention and that
+# the previously implemented data type transformations have
+# been applied appropriately.
+#
+# I am also examining the number of observations and variables
+# to better understand the scope and dimensionality of the
+# consolidated Netflix engagement reports.
+#
+# This preliminary inspection allows me to identify potential
+# structural inconsistencies, unexpected variable types,
+# or missing values that may warrant further investigation.
+#
+# By validating the structure of my dataset before proceeding,
+# I am establishing a foundation for subsequent exploratory
+# analysis, temporal comparisons, and statistical interpretation.
+#
+# Ultimately, this step serves as an initial quality-assurance
+# checkpoint, helping me evaluate whether my data acquisition
+# and preprocessing procedures have produced a coherent
+# and analytically usable dataset.
+
+glimpse(NETFLIX_DATA)
+```
+
+### Descriptive Summary Statistics
+
+```{r}
+#| label: task4-skim
+
+# Conducting a Comprehensive Exploratory Assessment of My Netflix Dataset
+#
+# In this section, I am extending my preliminary structural
+# inspection by conducting a more comprehensive examination
+# of the statistical characteristics and data quality of
+# my cleaned and standardized NETFLIX_DATA dataset.
+#
+# I am loading the skimr package, which provides a systematic
+# framework for generating descriptive summaries across
+# multiple variable types within a single dataset.
+#
+# Unlike glimpse(), which primarily examines the structural
+# composition of my data, skim() enables me to investigate
+# the distributional properties, completeness, and statistical
+# characteristics of individual variables.
+#
+# Specifically, I am examining the number of missing observations,
+# the proportion of complete records, and the distinct values
+# associated with relevant categorical variables.
+#
+# For numerical variables such as runtime, views, and hours_viewed,
+# I am evaluating descriptive statistics, including measures
+# of central tendency, dispersion, and distributional variation.
+#
+# These summaries will help me identify potentially anomalous
+# observations, substantial differences in viewing engagement,
+# and possible data quality concerns requiring further attention.
+#
+# I am also reviewing the characteristics of temporal and logical
+# variables to assess their consistency with the transformations
+# implemented during the preceding data-cleaning stages.
+#
+# By systematically examining these statistical summaries,
+# I am developing a more nuanced understanding of the dataset's
+# underlying composition before undertaking substantive analysis.
+#
+# This exploratory assessment is particularly important because
+# Netflix engagement data may exhibit considerable heterogeneity
+# across titles, reporting periods, and content durations.
+#
+# Ultimately, I am using this diagnostic procedure to strengthen
+# the methodological rigor of my investigation, identify potential
+# analytical limitations, and establish an empirical foundation
+# for subsequent comparisons, visualizations, and interpretations.
+
+library(skimr)
+
+skim(NETFLIX_DATA)
+```
+
+### Interpretation of Exploratory Findings
+
+The preliminary exploratory analysis reveals a dataset
+comprising 61,892 observations and 11 variables, representing
+24,427 distinct Netflix titles across seven semiannual
+reporting periods between 2023 and 2026.
+
+The distribution of audience engagement is markedly
+right-skewed. Average viewing hours approximate 8.27 million,
+substantially exceeding the median of 1.8 million.
+
+
+## Task 5: Exploring Netflix Viewing Patterns
+
+
+```{r}
+#| label: task5-calculations
+
+# Conducting Quantitative Analysis of Netflix Viewing Engagement
+#
+# In this section, I am performing a series of quantitative
+# calculations to investigate the temporal coverage, content
+# diversity, audience engagement, and global accessibility
+# of Netflix's streaming catalog.
+#
+# I am leveraging the cleaned and standardized NETFLIX_DATA
+# dataset to derive empirical measures that address the
+# principal analytical questions in this mini-project.
+#
+# My approach combines temporal analysis, distinct-title
+# enumeration, conditional filtering, aggregation, and
+# proportional calculations to evaluate different dimensions
+# of Netflix's content consumption patterns.
+#
+# I am also ensuring that missing observations are handled
+# appropriately and that each calculation produces a clearly
+# defined metric suitable for subsequent interpretation.
+
+
+# Loading the Libraries Required for Quantitative Analysis
+#
+# I am loading tidyverse to facilitate data manipulation,
+# conditional filtering, grouping, and statistical aggregation.
+#
+# I am also loading scales to support the formatting of
+# numerical results, particularly percentages and large
+# viewing-hour totals, during subsequent presentation.
+
+library(tidyverse)
+library(scales)
+
+
+# Q1: Determining the Temporal Coverage of My Netflix Dataset
+#
+# I am identifying the earliest and latest reporting dates
+# represented in my consolidated Netflix engagement dataset.
+#
+# Specifically, I am extracting the minimum period_start
+# and maximum period_end values to establish the complete
+# chronological boundaries of my investigation.
+#
+# This calculation allows me to determine the overall
+# reporting window covered by the available observations.
+#
+# Establishing these temporal boundaries is essential for
+# contextualizing subsequent longitudinal comparisons and
+# ensuring that my interpretation of viewing trends reflects
+# the actual reporting periods included in the dataset.
+#
+# I am storing these boundaries as start_date and end_date
+# for convenient reference in subsequent analytical outputs.
+
+start_date <- min(NETFLIX_DATA$period_start)
+
+end_date <- max(NETFLIX_DATA$period_end)
+
+
+# Q2: Calculating the Number of Distinct Netflix Titles
+#
+# I am determining the total number of unique content titles
+# represented across all reporting periods in my dataset.
+#
+# Rather than counting every observation independently,
+# I am using n_distinct() to identify unique title values,
+# thereby avoiding repeated enumeration of titles appearing
+# in multiple semiannual engagement reports.
+#
+# This distinction is important because an individual title
+# may remain available and generate viewing activity across
+# several reporting periods.
+#
+# By calculating the number of distinct titles, I am
+# establishing a descriptive measure of the breadth
+# of Netflix's reported content catalog.
+#
+# I am storing the resulting count in total_titles for
+# subsequent reporting and interpretation.
+
+total_titles <- NETFLIX_DATA |>
+  summarise(
+    n = n_distinct(title)
+  ) |>
+  pull(n)
+
+
+# Q3: Measuring Cumulative Engagement Across the Bridgerton Universe
+#
+# I am examining the aggregate viewing engagement associated
+# with Netflix's Bridgerton franchise, including related
+# programming such as Queen Charlotte.
+#
+# To capture these interconnected productions, I am applying
+# a case-insensitive regular expression that identifies
+# titles containing either "Bridgerton" or "Queen Charlotte".
+#
+# This approach allows me to consolidate viewing activity
+# across the broader franchise rather than evaluating
+# individual productions in isolation.
+#
+# After identifying the relevant observations, I am
+# aggregating their reported viewing hours across all
+# available semiannual reporting periods.
+#
+# I am excluding missing values from the summation to
+# prevent incomplete observations from interfering
+# with the calculation.
+#
+# This metric provides an empirical measure of cumulative
+# audience engagement associated with the franchise
+# throughout the reporting window.
+#
+# I am storing the resulting value in bridgerton_hours
+# for subsequent comparison with other major Netflix titles.
+
+bridgerton_hours <- NETFLIX_DATA |>
+  filter(
+    str_detect(
+      title,
+      regex(
+        "Bridgerton|Queen Charlotte",
+        ignore_case = TRUE
+      )
+    )
+  ) |>
+  summarise(
+    total = sum(hours_viewed, na.rm = TRUE)
+  ) |>
+  pull(total)
+
+
+# Q4: Calculating Stranger Things Viewing Hours
+#     While Excluding Companion and Related Content
+#
+# I am investigating the cumulative viewing engagement
+# associated with the primary Stranger Things series.
+#
+# Initially, I am identifying all observations containing
+# "Stranger Things" within their titles using a
+# case-insensitive regular expression.
+#
+# However, I recognize that matching titles may include
+# companion programming, supplementary productions,
+# or other related content that does not directly represent
+# the principal television series.
+#
+# To improve the specificity of my calculation, I am
+# applying an additional exclusion criterion to remove
+# titles associated with Beyond Stranger Things,
+# Tales from '85, and Fireplace content.
+#
+# This two-stage filtering process allows me to isolate
+# a more narrowly defined subset of franchise-related
+# observations for analytical comparison.
+#
+# Following these exclusions, I am summing the reported
+# viewing hours across the available reporting periods.
+#
+# I am also accounting for missing values during aggregation
+# to preserve the numerical validity of the resulting total.
+#
+# This calculation enables me to evaluate the cumulative
+# engagement associated with the selected Stranger Things
+# content without including the explicitly excluded
+# companion productions.
+#
+# I am storing the resulting measure in
+# stranger_things_hours for subsequent interpretation.
+
+stranger_things_hours <- NETFLIX_DATA |>
+  filter(
+    str_detect(
+      title,
+      regex(
+        "Stranger Things",
+        ignore_case = TRUE
+      )
+    )
+  ) |>
+  filter(
+    !str_detect(
+      title,
+      regex(
+        "Beyond Stranger Things|Tales from.?85|Fireplace",
+        ignore_case = TRUE
+      )
+    )
+  ) |>
+  summarise(
+    total = sum(hours_viewed, na.rm = TRUE)
+  ) |>
+  pull(total)
+
+
+# Q5: Evaluating Viewing Concentration Among the
+#     Ten Most-Watched Titles in the First Half of 2026
+#
+# I am examining the extent to which Netflix viewing
+# engagement was concentrated among its ten most-watched
+# titles during the 2026H1 reporting period.
+#
+# First, I am restricting my dataset to observations
+# associated with the first half of 2026.
+#
+# I am then grouping the observations by title and
+# aggregating their reported viewing hours to establish
+# a comparable measure of audience engagement.
+#
+# Next, I am arranging the titles in descending order
+# of total viewing hours to identify the ten titles
+# generating the greatest aggregate engagement.
+#
+# I am calculating the combined viewing hours of these
+# ten titles and dividing that figure by the total
+# viewing hours recorded during the same reporting period.
+#
+# This proportional measure allows me to assess the
+# concentration of audience attention within a relatively
+# small subset of Netflix's reported content catalog.
+#
+# A higher percentage would indicate that viewing activity
+# is disproportionately concentrated among leading titles,
+# whereas a lower percentage would suggest a more
+# distributed pattern of content consumption.
+#
+# I am storing this proportion in top10_share for
+# subsequent percentage formatting and interpretation.
+
+top10_share <- NETFLIX_DATA |>
+  filter(period == "2026H1") |>
+  group_by(title) |>
+  summarise(
+    hours = sum(hours_viewed, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(desc(hours)) |>
+  summarise(
+    share = sum(head(hours, 10)) / sum(hours)
+  ) |>
+  pull(share)
+
+
+# Q6: Measuring Global Availability Across
+#     Netflix Title-Period Observations
+#
+# I am evaluating the proportion of Netflix title-period
+# observations classified as globally available.
+#
+# Because the same title may appear in multiple reporting
+# periods, I am treating each title-period observation
+# as a separate record in this calculation.
+#
+# First, I am excluding observations with missing
+# global-availability classifications to ensure that
+# the denominator contains only records for which
+# availability status is known.
+#
+# I am then calculating the arithmetic mean of the
+# available_globally logical variable.
+#
+# Since I previously converted this variable into
+# Boolean format, TRUE values are interpreted as 1
+# and FALSE values as 0 during numerical aggregation.
+#
+# Consequently, the resulting mean represents the
+# proportion of nonmissing title-period observations
+# designated as globally available.
+#
+# This calculation provides an unweighted measure
+# of global content accessibility, with each eligible
+# observation contributing equally regardless of
+# its audience engagement.
+#
+# I am storing the resulting proportion in
+# global_title_share for subsequent comparison.
+
+global_title_share <- NETFLIX_DATA |>
+  filter(!is.na(available_globally)) |>
+  summarise(
+    share = mean(available_globally)
+  ) |>
+  pull(share)
+
+
+# Q6: Measuring Global Availability Weighted
+#     by Total Viewing Hours
+#
+# I am extending my analysis of global availability
+# by incorporating the relative viewing engagement
+# associated with each title-period observation.
+#
+# Unlike the preceding calculation, which assigns
+# equal importance to every eligible observation,
+# this approach weights global availability according
+# to the number of viewing hours generated.
+#
+# First, I am excluding observations with missing
+# availability classifications to maintain consistency
+# between the numerator and denominator.
+#
+# I am then calculating the aggregate viewing hours
+# associated with globally available content.
+#
+# Next, I am dividing this amount by the total
+# viewing hours across all observations with
+# known global-availability status.
+#
+# This calculation produces the proportion of
+# reported viewing hours attributable to content
+# classified as globally available.
+#
+# By comparing this engagement-weighted proportion
+# with the unweighted title-period proportion,
+# I am investigating whether globally available
+# content accounts for a disproportionately large
+# or small share of Netflix viewing activity.
+#
+# This distinction is analytically important because
+# content availability and audience engagement
+# represent related but fundamentally different
+# dimensions of Netflix's streaming ecosystem.
+#
+# I am storing the resulting proportion in
+# global_hours_share for subsequent comparative analysis.
+
+global_hours_share <- NETFLIX_DATA |>
+  filter(!is.na(available_globally)) |>
+  summarise(
+    share = sum(hours_viewed[available_globally]) /
+            sum(hours_viewed)
+  ) |>
+  pull(share)
+
+```
+
+### 5.1 Temporal Coverage
+
+The Netflix viewing dataset covers the period from
+`r format(start_date, "%B %d, %Y")` through
+`r format(end_date, "%B %d, %Y")`, encompassing seven
+semiannual reporting periods.
+
+### 5.2 Content Diversity
+
+The dataset contains `r scales::comma(total_titles)`
+distinct titles, reflecting the breadth of Netflix's
+programming catalog across the observation period.
+
+### 5.3 The Bridgerton Universe
+
+Content associated with the Bridgerton franchise,
+including Queen Charlotte, accumulated approximately
+`r scales::comma(bridgerton_hours)` viewing hours
+across the reporting periods.
+
+### 5.4 Stranger Things Franchise
+
+The five seasons of Stranger Things collectively generated
+approximately `r scales::comma(stranger_things_hours)`
+viewing hours. This calculation excludes companion
+productions and related background entertainment.
+
+### 5.5 Audience Concentration in 2026H1
+
+During the first half of 2026, the ten most-watched
+titles accounted for `r scales::percent(top10_share,
+accuracy = 0.01)` of total viewing hours.
+
+This statistic provides an indication of the extent
+to which audience engagement is concentrated among
+Netflix's most successful titles.
+
+### 5.6 Global Content Availability
+
+Among title-period observations with known availability,
+`r scales::percent(global_title_share, accuracy = 0.01)`
+were classified as globally available.
+
+When weighted by total viewing hours, globally available
+content represented `r scales::percent(global_hours_share,
+accuracy = 0.01)` of viewing activity associated with
+records having known availability.
+
+The distinction between catalog representation and
+viewership-weighted availability helps assess whether
+globally distributed programming attracts a
+disproportionate share of audience engagement.
+
+
+
+## Task 6: Comparative Analysis of Netflix Viewing Patterns
+
+The following analyses investigate audience concentration,
+catalog expansion, consistently popular programming,
+content-format preferences, and the performance of live
+events. All results are derived from Netflix's seven
+semiannual engagement reports.
+
+```{r}
+#| label: task6-setup
+#| include: false
+
+# Preparing My Analytical Environment for Data Presentation
+#
+# In this section, I am configuring the computational environment
+# required to construct, format, and present the analytical results
+# derived from my Netflix engagement dataset.
+#
+# I am loading the tidyverse package to facilitate data manipulation,
+# aggregation, filtering, and restructuring operations necessary
+# for generating summary tables and comparative analyses.
+#
+# Additionally, I am incorporating the gt package to develop
+# professionally formatted tables that communicate my analytical
+# findings in a structured, accessible, and visually coherent manner.
+#
+# I am also loading the scales package to standardize the presentation
+# of numerical results, particularly percentages, large viewing-hour
+# totals, and other quantitative measures requiring appropriate formatting.
+#
+# Furthermore, I am specifying include: false in my Quarto chunk
+# options to execute the required library-loading operations without
+# displaying the underlying R code or its output in the rendered report.
+#
+# This approach allows me to maintain a clean presentation while
+# preserving the reproducibility and computational integrity
+# of my analytical workflow.
+#
+# Ultimately, this preparatory step establishes the technical
+# foundation for transforming my quantitative findings into
+# interpretable tables and communicating temporal patterns,
+# audience engagement, and content consumption characteristics.
+
+library(tidyverse)
+library(gt)
+library(scales)
+```
+
+### 6.1 Most-Watched Title in Each Reporting Period
+
+Identifying the leading title within each reporting period
+provides insight into the concentration of audience
+engagement and the relative importance of individual
+blockbuster productions.
+
+```{r}
+#| label: task6-top-titles
+
+# Identifying Netflix's Most-Watched Titles Across Reporting Periods
+#
+# In this section, I am conducting a comparative analysis to identify
+# the most-watched Netflix title within each semiannual reporting period.
+#
+# My primary objective is to examine the distribution of audience
+# engagement across individual titles and determine the extent to which
+# leading productions contribute to overall viewing activity.
+#
+# Rather than aggregating viewing hours across the entire dataset,
+# I am preserving the temporal structure of the observations to
+# investigate changes in content popularity over successive periods.
+#
+# This approach enables me to identify the dominant title in each
+# reporting interval and evaluate its relative contribution to
+# Netflix's total reported viewing hours.
+
+
+# Aggregating Viewing Hours by Reporting Period and Content Title
+#
+# I am grouping my dataset by reporting period and title to
+# calculate the cumulative viewing hours associated with
+# each individual production during a specific interval.
+#
+# I am using summarise() to aggregate viewing hours while
+# excluding missing values from the calculations.
+#
+# Additionally, I am specifying .groups = "drop" to remove
+# the existing grouping structure before establishing
+# the next level of aggregation.
+
+top_titles <- NETFLIX_DATA |>
+  group_by(period, title) |>
+  summarise(
+    hours_viewed = sum(hours_viewed, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+
+
+  # Calculating Total Viewing Hours and Individual Title Contributions
+  #
+  # I am regrouping the aggregated observations by reporting
+  # period to calculate the total viewing hours generated
+  # across all titles within each six-month interval.
+  #
+  # Subsequently, I am computing viewing_share by dividing
+  # each title's viewing hours by the corresponding period total.
+  #
+  # This proportional measure allows me to evaluate the relative
+  # significance of individual titles rather than relying
+  # exclusively on their absolute viewing-hour totals.
+  #
+  # By incorporating this metric, I am accounting for differences
+  # in aggregate viewing activity across reporting periods.
+
+  group_by(period) |>
+  mutate(
+    total_period_hours = sum(hours_viewed),
+    viewing_share = hours_viewed / total_period_hours
+  ) |>
+
+
+  # Identifying the Highest-Performing Title in Each Reporting Period
+  #
+  # I am applying slice_max() to select the title with the
+  # greatest number of viewing hours within each period.
+  #
+  # I am specifying n = 1 to retain only the highest-ranked
+  # observation and with_ties = FALSE to ensure that
+  # exactly one title is selected per reporting interval.
+  #
+  # This procedure enables me to construct a concise
+  # comparative summary of Netflix's leading productions.
+  #
+  # Finally, I am removing the grouping structure and
+  # arranging the results chronologically to facilitate
+  # the examination of changes in viewing preferences.
+
+  slice_max(
+    hours_viewed,
+    n = 1,
+    with_ties = FALSE
+  ) |>
+  ungroup() |>
+  arrange(period)
+
+
+# Constructing a Comparative Table of Netflix's Most-Watched Titles
+#
+# I am transforming the resulting analytical summary into
+# a professionally formatted table using the gt package.
+#
+# My objective is to communicate the leading title,
+# corresponding viewing hours, and relative audience share
+# for each reporting period in a clear and accessible format.
+#
+# First, I am selecting the variables most relevant to
+# this comparison to avoid presenting unnecessary intermediate
+# calculations in the final report.
+#
+# I am then establishing a descriptive table title and
+# subtitle that communicate the analytical purpose
+# and temporal scope of the comparison.
+
+top_titles |>
+  select(
+    period,
+    title,
+    hours_viewed,
+    viewing_share
+  ) |>
+  gt() |>
+
+
+  # Defining the Table Title and Analytical Context
+  #
+  # I am incorporating a descriptive heading to identify
+  # the table's principal subject.
+  #
+  # I am also adding a subtitle to clarify that the results
+  # represent the highest-performing title and its proportion
+  # of total viewing hours within each reporting period.
+
+  tab_header(
+    title = "Netflix's Most-Watched Titles",
+    subtitle = "Leading title and share of viewing hours by period"
+  ) |>
+
+
+  # Standardizing Column Labels for Interpretability
+  #
+  # I am replacing the underlying variable names with
+  # reader-friendly column headings to improve clarity
+  # and maintain consistency with academic reporting conventions.
+  #
+  # These labels distinguish the reporting interval,
+  # leading production, absolute engagement, and
+  # proportional contribution to total viewing activity.
+
+  cols_label(
+    period = "Period",
+    title = "Most-Watched Title",
+    hours_viewed = "Viewing Hours",
+    viewing_share = "Share of Total"
+  ) |>
+
+
+  # Formatting Absolute Viewing Hours
+  #
+  # I am displaying viewing-hour totals as whole numbers
+  # without decimal places because the underlying metric
+  # represents aggregate hours of audience engagement.
+  #
+  # This formatting improves numerical readability while
+  # preserving the magnitude of the reported observations.
+
+  fmt_number(
+    columns = hours_viewed,
+    decimals = 0
+  ) |>
+
+
+  # Formatting Proportional Viewing Contributions
+  #
+  # I am converting the viewing_share variable into
+  # percentage format with two decimal places.
+  #
+  # This presentation allows me to communicate how much
+  # of each period's total viewing activity was attributable
+  # to its most-watched title.
+  #
+  # Retaining two decimal places provides sufficient precision
+  # for comparing relatively small differences in audience share.
+
+  fmt_percent(
+    columns = viewing_share,
+    decimals = 2
+  ) |>
+
+
+  # Establishing Consistent Table Alignment
+  #
+  # Finally, I am aligning the table to the left to maintain
+  # consistency with the surrounding report content.
+  #
+  # This formatting decision supports a coherent presentation
+  # of my analytical findings within the rendered Quarto document.
+
+  tab_options(
+    table.align = "left"
+  )
+```
+
+### 6.2 Evolution of Netflix's Content Catalog
+
+Catalog expansion is assessed through two complementary
+measures: the number of distinct titles available during
+each reporting period and their combined runtime.
+
+Because runtime is measured in minutes, the total is
+converted into hours to facilitate interpretation.
+
+```{r}
+#| label: task6-catalog-growth
+#| echo: true
+
+# Examining the Evolution of Netflix's Content Catalog
+#
+# In this section, I am conducting a longitudinal analysis
+# of Netflix's reported content catalog to investigate
+# changes in content availability and aggregate runtime
+# across successive semiannual reporting periods.
+#
+# My primary objective is to evaluate how the number of
+# distinct titles and the cumulative duration of reported
+# content have evolved throughout the observation window.
+#
+# Rather than aggregating observations across all years,
+# I am preserving the temporal structure of the dataset
+# to identify period-specific variations in catalog size
+# and content duration.
+#
+# This approach enables me to distinguish fluctuations
+# in the breadth of Netflix's reported content offerings
+# from changes in the aggregate runtime represented
+# within each reporting interval.
+
+
+# Calculating Distinct Titles and Aggregate Runtime
+#
+# I am grouping my Netflix dataset by reporting period
+# to calculate two complementary measures of catalog size.
+#
+# First, I am using n_distinct() to determine the number
+# of unique titles appearing within each semiannual report.
+#
+# This calculation provides a measure of content diversity
+# by identifying the number of distinct productions
+# represented during each reporting interval.
+#
+# Second, I am calculating the aggregate runtime of
+# all reported observations within each period.
+#
+# Because runtime is expressed in minutes, I am dividing
+# the cumulative total by 60 to convert the resulting
+# measure into hours.
+#
+# I am excluding missing runtime values during aggregation
+# to prevent incomplete observations from disrupting
+# the numerical calculations.
+#
+# Together, these measures allow me to examine whether
+# changes in the number of reported titles are accompanied
+# by corresponding changes in aggregate content duration.
+#
+# I am also removing the grouping structure after
+# summarization and arranging the observations
+# chronologically to facilitate temporal comparisons.
+
+catalog_growth <- NETFLIX_DATA |>
+  group_by(period) |>
+  summarise(
+    distinct_titles = n_distinct(title),
+
+    total_runtime_hours = sum(
+      runtime,
+      na.rm = TRUE
+    ) / 60,
+
+    .groups = "drop"
+  ) |>
+  arrange(period)
+
+
+# Constructing a Comparative Table of Netflix's Catalog Evolution
+#
+# I am transforming the resulting summary into a
+# professionally formatted table using the gt package.
+#
+# My objective is to present the number of distinct titles
+# and aggregate runtime for each reporting period in a
+# clear, consistent, and analytically interpretable format.
+#
+# By displaying these measures alongside one another,
+# I am facilitating comparisons between the numerical
+# breadth of Netflix's reported catalog and its
+# corresponding cumulative content duration.
+
+catalog_growth |>
+  gt() |>
+
+
+  # Establishing the Table Title and Descriptive Subtitle
+  #
+  # I am assigning a descriptive title that communicates
+  # the longitudinal focus of my catalog analysis.
+  #
+  # I am also incorporating a subtitle to clarify that
+  # the table presents catalog size and aggregate runtime
+  # across individual semiannual reporting periods.
+  #
+  # These headings provide contextual information
+  # necessary for interpreting the reported metrics.
+
+  tab_header(
+    title = "Evolution of Netflix's Content Catalog",
+    subtitle = "Catalog size and aggregate runtime by reporting period"
+  ) |>
+
+
+  # Standardizing Column Labels for Analytical Clarity
+  #
+  # I am replacing the underlying variable names with
+  # descriptive headings that clearly identify the
+  # reporting period, number of distinct titles,
+  # and total runtime expressed in hours.
+  #
+  # This standardization improves readability and
+  # ensures consistency with the presentation conventions
+  # adopted throughout my mini-project.
+
+  cols_label(
+    period = "Period",
+    distinct_titles = "Distinct Titles",
+    total_runtime_hours = "Total Runtime (Hours)"
+  ) |>
+
+
+  # Formatting Numerical Results for Readability
+  #
+  # I am formatting both numerical columns without
+  # decimal places to present the results as whole numbers.
+  #
+  # This approach emphasizes the overall magnitude
+  # of catalog size and aggregate runtime while
+  # avoiding unnecessary numerical precision.
+  #
+  # I am also retaining standard thousands separators
+  # to make larger values easier to interpret.
+
+  fmt_number(
+    columns = c(
+      distinct_titles,
+      total_runtime_hours
+    ),
+    decimals = 0
+  ) |>
+
+
+  # Aligning the Table with My Report Layout
+  #
+  # Finally, I am aligning the table to the left
+  # to maintain visual consistency with the surrounding
+  # analytical narrative and previously generated tables.
+  #
+  # This formatting decision contributes to a coherent,
+  # professional presentation of my findings in Quarto.
+
+  tab_options(
+    table.align = "left"
+  )
+```
+
+### 6.3 Consistently Popular Titles Across Reporting Periods
+
+Sustained audience engagement is evaluated by identifying
+titles appearing in all seven reporting periods. Average
+viewing hours, minimum viewing hours, and standard deviation
+are used to distinguish enduring performers from titles
+whose popularity is concentrated in a single period.
+
+```{r}
+#| label: task6-consistent-titles
+#| echo: true
+
+# Identifying Netflix's Most Consistently Watched Titles
+#
+# In this section, I am conducting a longitudinal analysis
+# to identify Netflix titles that have demonstrated sustained
+# audience engagement across all available reporting periods.
+#
+# My primary objective is to distinguish titles that consistently
+# attract substantial viewing activity from those whose popularity
+# may be concentrated within a limited reporting interval.
+#
+# Rather than evaluating content popularity exclusively through
+# cumulative viewing hours, I am incorporating measures of
+# average engagement, minimum engagement, and statistical
+# variability to assess the persistence of audience interest.
+#
+# This approach enables me to investigate the extent to which
+# individual titles maintain their viewing performance over time,
+# providing a more comprehensive perspective on the durability
+# of audience engagement.
+
+
+# Aggregating Viewing Hours by Title and Reporting Period
+#
+# I am initially grouping my Netflix dataset by content title
+# and semiannual reporting period to calculate the total
+# viewing hours associated with each title-period combination.
+#
+# I am using summarise() to aggregate viewing hours while
+# excluding missing observations from the calculation.
+#
+# This preliminary aggregation establishes a consistent
+# analytical unit for comparing the performance of individual
+# titles across successive reporting intervals.
+#
+# Additionally, I am removing the existing grouping structure
+# before proceeding to title-level statistical calculations.
+
+consistent_titles <- NETFLIX_DATA |>
+  group_by(title, period) |>
+  summarise(
+    period_hours = sum(hours_viewed, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+
+
+  # Calculating Longitudinal Engagement and Variability Metrics
+  #
+  # I am regrouping the aggregated observations by title
+  # to examine the consistency of audience engagement
+  # across the reporting periods in which each title appears.
+  #
+  # First, I am calculating periods_present using n_distinct()
+  # to determine the number of unique reporting periods
+  # associated with each individual title.
+  #
+  # Second, I am computing average_hours to establish
+  # the arithmetic mean of viewing hours across the
+  # reporting periods represented for each title.
+  #
+  # Third, I am calculating minimum_hours to identify
+  # the lowest recorded viewing-hour total for each title.
+  #
+  # This minimum provides a conservative measure of
+  # sustained audience engagement because it captures
+  # the title's weakest observed reporting-period performance.
+  #
+  # Finally, I am calculating sd_hours using the standard
+  # deviation to quantify fluctuations in viewing activity
+  # across successive reporting periods.
+  #
+  # A relatively lower standard deviation indicates more
+  # stable absolute viewing-hour totals, whereas a higher
+  # standard deviation suggests greater temporal variability.
+  #
+  # Collectively, these measures allow me to evaluate
+  # both the magnitude and consistency of audience engagement.
+
+  group_by(title) |>
+  summarise(
+    periods_present = n_distinct(period),
+    average_hours = mean(period_hours),
+    minimum_hours = min(period_hours),
+    sd_hours = sd(period_hours),
+    .groups = "drop"
+  ) |>
+
+
+  # Restricting My Analysis to Titles Present in Every Reporting Period
+  #
+  # I am applying a completeness criterion to retain only
+  # titles appearing in every reporting period represented
+  # within my consolidated Netflix dataset.
+  #
+  # Specifically, I am comparing each title's periods_present
+  # value against the total number of distinct reporting
+  # periods contained in NETFLIX_DATA.
+  #
+  # This restriction establishes a consistent temporal
+  # basis for evaluating sustained audience engagement.
+  #
+  # By excluding titles that do not appear in every period,
+  # I am reducing potential comparability issues associated
+  # with differences in the number of observed intervals.
+  #
+  # However, I recognize that this criterion measures
+  # continuous representation within Netflix's engagement
+  # reports rather than uninterrupted audience demand
+  # or availability throughout the entire observation window.
+
+  filter(
+    periods_present == n_distinct(NETFLIX_DATA$period)
+  ) |>
+
+
+  # Ranking Titles According to Sustained Viewing Performance
+  #
+  # I am arranging the qualifying titles in descending
+  # order of their minimum recorded viewing hours.
+  #
+  # This ranking prioritizes titles that maintained
+  # comparatively strong engagement even during their
+  # lowest-performing reporting periods.
+  #
+  # Where multiple titles share the same minimum viewing
+  # hours, I am using average_hours as a secondary
+  # ranking criterion to distinguish their performance.
+  #
+  # I am then selecting the ten highest-ranked titles
+  # to construct a focused comparative summary.
+  #
+  # This methodology emphasizes sustained absolute
+  # engagement rather than isolated popularity peaks.
+
+  arrange(
+    desc(minimum_hours),
+    desc(average_hours)
+  ) |>
+  slice_head(n = 10)
+
+
+# Constructing a Comparative Table of Consistently Watched Titles
+#
+# I am transforming the resulting analytical summary
+# into a professionally formatted table using gt.
+#
+# My objective is to communicate the relationship between
+# recurring title appearances, average viewing engagement,
+# minimum viewing performance, and temporal variability.
+#
+# By presenting these measures together, I am enabling
+# a multidimensional comparison of the titles that
+# maintained the strongest minimum engagement levels
+# throughout the reporting window.
+
+consistent_titles |>
+  gt() |>
+
+
+  # Establishing the Table Title and Analytical Context
+  #
+  # I am assigning a descriptive title that reflects
+  # the longitudinal focus of my analysis.
+  #
+  # I am also incorporating a subtitle to clarify
+  # that the ten selected titles are ranked primarily
+  # according to their minimum recorded viewing hours.
+  #
+  # This distinction is important because my ranking
+  # methodology prioritizes sustained engagement
+  # rather than cumulative popularity alone.
+
+  tab_header(
+    title = "Netflix's Most Consistently Watched Titles",
+    subtitle = "Top 10 recurring titles ranked by minimum viewing hours"
+  ) |>
+
+
+  # Standardizing Column Labels for Analytical Interpretation
+  #
+  # I am replacing the underlying variable names with
+  # descriptive headings to improve the interpretability
+  # and accessibility of my statistical results.
+  #
+  # Specifically, I am distinguishing the number of
+  # reporting periods, average viewing hours, minimum
+  # viewing hours, and standard deviation.
+  #
+  # These labels provide readers with a clearer
+  # understanding of the statistical dimensions
+  # used to evaluate sustained audience engagement.
+
+  cols_label(
+    title = "Title",
+    periods_present = "Periods",
+    average_hours = "Average Hours",
+    minimum_hours = "Minimum Hours",
+    sd_hours = "Standard Deviation"
+  ) |>
+
+
+  # Formatting Numerical Measures for Readability
+  #
+  # I am formatting the average viewing hours, minimum
+  # viewing hours, and standard deviation as whole numbers.
+  #
+  # This approach improves the presentation of large
+  # engagement totals while avoiding unnecessary
+  # decimal precision.
+  #
+  # I am also preserving standard thousands separators
+  # to facilitate comparisons across titles with
+  # substantially different viewing-hour totals.
+
+  fmt_number(
+    columns = c(
+      average_hours,
+      minimum_hours,
+      sd_hours
+    ),
+    decimals = 0
+  ) |>
+
+
+  # Aligning the Table with My Quarto Report Layout
+  #
+  # Finally, I am aligning the table to the left
+  # to maintain consistency with the presentation
+  # conventions adopted throughout my mini-project.
+  #
+  # This formatting decision supports a coherent
+  # and professional presentation of my longitudinal
+  # findings within the rendered analytical report.
+
+  tab_options(
+    table.align = "left"
+  )
+```
+
+### 6.4 Television Shows Versus Movies
+
+Netflix's source data does not explicitly distinguish
+television series from movies. Accordingly, an approximate
+classification is constructed using two indicators:
+a runtime exceeding four hours or the presence of the
+word "Season" in a title.
+
+Titles satisfying either criterion are classified as
+television shows; remaining titles are classified as movies.
+This heuristic may misclassify certain productions.
+
+```{r}
+#| label: task6-shows-vs-movies
+#| echo: true
+
+# Comparing Audience Engagement Between Television Shows and Movies
+#
+# In this section, I am conducting a comparative analysis
+# of Netflix viewing patterns to investigate differences
+# in audience engagement between television shows and movies.
+#
+# My primary objective is to determine the proportion of
+# total viewing hours attributable to each content category
+# across successive semiannual reporting periods.
+#
+# Rather than aggregating engagement across the entire
+# observation window, I am preserving the temporal structure
+# of the dataset to examine how viewing preferences may
+# have evolved over time.
+#
+# This approach allows me to investigate whether television
+# programming or feature-length films account for a greater
+# share of reported viewing activity within each period.
+#
+# Because my standardized dataset does not contain an explicit
+# variable identifying content type, I am implementing a
+# rule-based classification using available information
+# about content runtime and title characteristics.
+
+
+# Classifying Netflix Content into Television Shows and Movies
+#
+# I am using mutate() and case_when() to construct a new
+# categorical variable named content_type.
+#
+# Specifically, I am classifying an observation as a
+# television show when its recorded runtime exceeds
+# 240 minutes or its title contains the word "Season".
+#
+# I am using str_detect() with a case-insensitive regular
+# expression to identify seasonal references regardless
+# of capitalization.
+#
+# The word-boundary expression ensures that I am matching
+# "Season" as a distinct word rather than identifying
+# unrelated character sequences within longer words.
+#
+# For observations that do not satisfy either condition,
+# I am assigning the classification "Movie".
+#
+# This heuristic classification provides an operational
+# distinction between the two content categories.
+#
+# However, I recognize that runtime and title conventions
+# are imperfect indicators of content type. Consequently,
+# some productions may be misclassified, particularly
+# unusually long films or television programs without
+# explicit seasonal identifiers in their titles.
+
+content_comparison <- NETFLIX_DATA |>
+  mutate(
+    content_type = case_when(
+      (!is.na(runtime) & runtime > 240) |
+        str_detect(
+          title,
+          regex("\\bSeason\\b", ignore_case = TRUE)
+        ) ~ "TV Show",
+
+      TRUE ~ "Movie"
+    )
+  ) |>
+
+
+  # Aggregating Viewing Hours by Reporting Period and Content Type
+  #
+  # I am grouping the classified observations by reporting
+  # period and content category to calculate the cumulative
+  # viewing hours associated with television shows and movies.
+  #
+  # I am using summarise() to aggregate the hours_viewed
+  # variable while excluding missing observations.
+  #
+  # This calculation establishes a comparable measure
+  # of audience engagement for both content categories
+  # within each semiannual reporting interval.
+  #
+  # I am also removing the grouping structure following
+  # aggregation to facilitate subsequent calculations.
+
+  group_by(period, content_type) |>
+  summarise(
+    viewing_hours = sum(hours_viewed, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+
+
+  # Calculating the Relative Share of Viewing Hours
+  #
+  # I am regrouping the aggregated observations by
+  # reporting period to calculate the proportional
+  # contribution of each content category.
+  #
+  # Specifically, I am dividing the viewing hours
+  # associated with each category by the combined
+  # viewing hours recorded during the same period.
+  #
+  # This calculation produces a standardized measure
+  # of audience engagement that allows me to compare
+  # television shows and movies independently of
+  # differences in total viewing activity across periods.
+  #
+  # By expressing engagement as a proportion, I am
+  # establishing a consistent basis for identifying
+  # potential shifts in viewing preferences over time.
+  #
+  # I am subsequently removing the grouping structure
+  # to prepare the dataset for tabular presentation.
+
+  group_by(period) |>
+  mutate(
+    share = viewing_hours / sum(viewing_hours)
+  ) |>
+  ungroup() |>
+
+
+  # Restructuring My Results for Comparative Presentation
+  #
+  # I am selecting the reporting period, content category,
+  # and corresponding viewing share for presentation.
+  #
+  # Next, I am using pivot_wider() to transform the dataset
+  # from long format into a wider comparative structure.
+  #
+  # This transformation creates separate columns for
+  # television shows and movies, allowing me to examine
+  # their relative viewing shares side by side.
+  #
+  # Finally, I am arranging the observations chronologically
+  # to facilitate the identification of temporal patterns
+  # across successive reporting periods.
+
+  select(
+    period,
+    content_type,
+    share
+  ) |>
+  pivot_wider(
+    names_from = content_type,
+    values_from = share
+  ) |>
+  arrange(period)
+
+
+# Constructing a Comparative Table of Television and Movie Engagement
+#
+# I am transforming the resulting summary into a
+# professionally formatted table using the gt package.
+#
+# My objective is to communicate the relative contribution
+# of television shows and movies to Netflix's total
+# reported viewing hours within each reporting period.
+#
+# Presenting both categories alongside one another
+# allows me to evaluate differences in audience engagement
+# and investigate whether their relative shares
+# exhibit meaningful changes over time.
+
+content_comparison |>
+  gt() |>
+
+
+  # Establishing the Table Title and Analytical Context
+  #
+  # I am assigning a descriptive title that identifies
+  # the two content categories under investigation.
+  #
+  # I am also incorporating a subtitle to clarify that
+  # the reported values represent proportional viewing
+  # hours rather than absolute engagement totals.
+  #
+  # This distinction is important because my analysis
+  # focuses on the relative distribution of audience
+  # attention within each semiannual reporting period.
+
+  tab_header(
+    title = "Television Shows vs. Movies",
+    subtitle = "Share of viewing hours by reporting period"
+  ) |>
+
+
+  # Standardizing Column Labels for Interpretability
+  #
+  # I am replacing the underlying variable names with
+  # descriptive headings that clearly distinguish
+  # the reporting period and the two content categories.
+  #
+  # This standardization improves readability and
+  # maintains consistency with the presentation
+  # conventions adopted throughout my mini-project.
+
+  cols_label(
+    period = "Period",
+    `TV Show` = "TV Shows",
+    Movie = "Movies"
+  ) |>
+
+
+  # Formatting Viewing Shares as Percentages
+  #
+  # I am converting the calculated viewing proportions
+  # into percentage format using fmt_percent().
+  #
+  # I am retaining two decimal places to provide
+  # sufficient precision for identifying relatively
+  # small differences in audience engagement.
+  #
+  # This formatting enables me to compare the relative
+  # popularity of television shows and movies without
+  # requiring readers to interpret raw decimal values.
+  #
+  # Because the two categories collectively represent
+  # the classified observations within each period,
+  # their viewing shares should sum to approximately
+  # 100 percent, subject to numerical rounding.
+
+  fmt_percent(
+    columns = c(`TV Show`, Movie),
+    decimals = 2
+  ) |>
+
+
+  # Aligning the Table with My Quarto Report Layout
+  #
+  # Finally, I am aligning the table to the left
+  # to maintain consistency with the formatting
+  # adopted throughout my analytical report.
+  #
+  # This presentation choice contributes to a
+  # coherent and professionally structured comparison
+  # of Netflix viewing preferences over time.
+
+  tab_options(
+    table.align = "left"
+  )
+```
+
+### 6.5 Live Events Versus Pre-Recorded Content
+
+The final comparison evaluates whether live events
+generate greater viewing activity than pre-recorded
+programming.
+
+Performance is evaluated using both average viewing hours
+and the 90th percentile of viewing hours, providing a
+comparison of typical and higher-performing content.
+
+```{r}
+#| label: task6-live-comparison
+#| echo: true
+
+# Comparing Audience Engagement Between Live Events and Pre-Recorded Content
+#
+# In this section, I am conducting a comparative statistical analysis
+# to investigate differences in audience engagement between Netflix's
+# live-event programming and traditional pre-recorded content.
+#
+# My primary objective is to evaluate whether these two content formats
+# exhibit distinct patterns of viewing activity, particularly with
+# respect to average engagement, median performance, and the upper
+# distribution of reported viewing hours.
+#
+# Rather than relying exclusively on aggregate viewing totals,
+# I am incorporating multiple descriptive statistics to develop
+# a more nuanced understanding of engagement distributions.
+#
+# This approach allows me to distinguish typical viewing performance
+# from exceptionally high-engagement observations and investigate
+# whether the two formats exhibit different consumption patterns.
+#
+# I am conducting this comparison across all available reporting
+# periods to establish an overall descriptive assessment of
+# audience engagement by content format.
+
+
+# Classifying Netflix Programming by Content Format
+#
+# I am using mutate() and if_else() to construct a categorical
+# variable named content_format based on the existing
+# live_event indicator in my standardized Netflix dataset.
+#
+# Specifically, I am assigning the classification "Live Event"
+# to observations where live_event is TRUE and "Pre-Recorded"
+# to observations where the indicator is FALSE.
+#
+# This transformation enables me to distinguish between
+# the two programming formats and subsequently evaluate
+# their respective engagement characteristics.
+#
+# By creating a descriptive categorical variable, I am also
+# improving the interpretability of my analytical outputs
+# and facilitating comparisons between content formats.
+
+live_comparison <- NETFLIX_DATA |>
+  mutate(
+    content_format = if_else(
+      live_event,
+      "Live Event",
+      "Pre-Recorded"
+    )
+  ) |>
+
+
+  # Grouping Observations by Content Format
+  #
+  # I am grouping the dataset according to content_format
+  # to calculate descriptive statistics independently
+  # for live events and pre-recorded programming.
+  #
+  # This grouping structure allows me to examine
+  # differences in engagement distributions without
+  # combining observations from the two categories.
+  #
+  # I am subsequently using summarise() to generate
+  # four complementary statistical measures that
+  # characterize the size, central tendency, and
+  # upper distribution of viewing engagement.
+
+  group_by(content_format) |>
+  summarise(
+
+
+    # Calculating the Number of Observations
+    #
+    # I am using n() to determine the total number
+    # of records associated with each content format.
+    #
+    # This calculation establishes the relative
+    # representation of live events and pre-recorded
+    # programming within my analytical dataset.
+    #
+    # Understanding the number of observations is
+    # particularly important because differences
+    # in sample size may influence the stability
+    # and interpretation of descriptive statistics.
+
+    observations = n(),
+
+
+    # Calculating Average Viewing Hours
+    #
+    # I am computing the arithmetic mean of viewing
+    # hours for each content format using mean().
+    #
+    # This measure provides an estimate of average
+    # engagement per reported observation.
+    #
+    # I am excluding missing values to ensure that
+    # incomplete observations do not interfere
+    # with the calculation.
+    #
+    # Although the mean offers a useful summary of
+    # overall engagement, I recognize that it may
+    # be influenced by exceptionally popular titles
+    # generating disproportionately high viewing hours.
+
+    average_hours = mean(
+      hours_viewed,
+      na.rm = TRUE
+    ),
+
+
+    # Calculating Median Viewing Hours
+    #
+    # I am calculating the median viewing hours
+    # associated with each programming format.
+    #
+    # Unlike the arithmetic mean, the median
+    # identifies the central observation within
+    # the ordered distribution of viewing hours.
+    #
+    # This statistic provides a more robust measure
+    # of typical engagement when the underlying
+    # distribution contains substantial skewness
+    # or unusually high-performing productions.
+    #
+    # By comparing the mean and median, I am
+    # investigating whether audience engagement
+    # is concentrated among a relatively small
+    # number of exceptionally popular observations.
+
+    median_hours = median(
+      hours_viewed,
+      na.rm = TRUE
+    ),
+
+
+    # Calculating the 90th Percentile of Viewing Hours
+    #
+    # I am using quantile() to determine the
+    # 90th percentile of viewing hours within
+    # each content category.
+    #
+    # This statistic identifies the engagement
+    # threshold at or below which approximately
+    # 90 percent of observations fall.
+    #
+    # Consequently, observations exceeding this
+    # threshold represent approximately the
+    # highest-performing 10 percent of records.
+    #
+    # I am incorporating this measure to evaluate
+    # the upper distribution of viewing engagement
+    # and compare high-performing content across
+    # live and pre-recorded programming.
+    #
+    # This approach complements the mean and median
+    # by providing additional insight into the
+    # magnitude of upper-tier audience engagement.
+
+    top_tier_hours = quantile(
+      hours_viewed,
+      probs = 0.90,
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  )
+
+
+# Constructing a Comparative Table of Content Engagement
+#
+# I am transforming the resulting descriptive statistics
+# into a professionally formatted table using the gt package.
+#
+# My objective is to communicate the differences between
+# live events and pre-recorded programming through a
+# structured comparison of observation counts, average
+# viewing hours, median viewing hours, and upper-percentile
+# engagement.
+#
+# Presenting these statistics alongside one another
+# enables me to assess whether differences in average
+# engagement are accompanied by corresponding differences
+# in typical or high-performing observations.
+#
+# This multidimensional comparison provides a stronger
+# descriptive foundation than relying on a single
+# measure of content popularity.
+
+live_comparison |>
+  gt() |>
+
+
+  # Establishing the Table Title and Analytical Context
+  #
+  # I am assigning a descriptive title that identifies
+  # the two programming formats under investigation.
+  #
+  # I am also incorporating a subtitle to clarify
+  # that the comparison focuses on average, median,
+  # and 90th-percentile viewing hours.
+  #
+  # These headings communicate the statistical
+  # scope of my analysis and provide readers with
+  # an appropriate framework for interpretation.
+
+  tab_header(
+    title = "Live Events vs. Pre-Recorded Programming",
+    subtitle = "Average, median, and 90th-percentile viewing hours"
+  ) |>
+
+
+  # Standardizing Column Labels for Interpretability
+  #
+  # I am replacing the underlying variable names
+  # with descriptive column headings to improve
+  # readability and analytical clarity.
+  #
+  # Specifically, I am distinguishing the content
+  # classification, number of observations,
+  # arithmetic mean, median, and 90th percentile.
+  #
+  # These labels ensure that readers can readily
+  # identify the statistical measures used
+  # to evaluate audience engagement.
+
+  cols_label(
+    content_format = "Content Format",
+    observations = "Observations",
+    average_hours = "Average Hours",
+    median_hours = "Median Hours",
+    top_tier_hours = "90th Percentile"
+  ) |>
+
+
+  # Formatting Numerical Results for Readability
+  #
+  # I am formatting the observation counts and
+  # viewing-hour statistics without decimal places
+  # to emphasize the magnitude of engagement.
+  #
+  # I am also retaining thousands separators
+  # to facilitate comparisons between categories
+  # with substantially different numerical values.
+  #
+  # This formatting approach improves the accessibility
+  # of my statistical findings while avoiding
+  # unnecessary numerical precision.
+
+  fmt_number(
+    columns = c(
+      observations,
+      average_hours,
+      median_hours,
+      top_tier_hours
+    ),
+    decimals = 0
+  ) |>
+
+
+  # Aligning the Table with My Quarto Report Layout
+  #
+  # Finally, I am aligning the table to the left
+  # to maintain consistency with the formatting
+  # conventions adopted throughout my mini-project.
+  #
+  # This presentation decision contributes to a
+  # coherent and professionally structured report
+  # while facilitating interpretation of the
+  # comparative engagement statistics.
+
+  tab_options(
+    table.align = "left"
+  )
+```
+
+### 6.6 Interpretation and Strategic Implications
+
+The preceding analyses provide a comprehensive perspective on Netflix’s content
+portfolio and evolving audience engagement patterns. Examining viewership 
+leaders across reporting periods highlights the influence of blockbuster titles,
+while catalog trends help distinguish content expansion from actual viewing 
+activity.
+
+Identifying consistently popular titles further underscores the strategic value
+of programming that sustains audience interest over time. Similarly, comparing
+television shows and movies provides insight into changing consumption 
+preferences, although the classification methodology introduces certain
+limitations.
+
+The comparison between live events and pre-recorded programming offers an
+additional perspective on the potential of real-time content to diversify
+audience engagement. Collectively, these findings establish an empirical
+foundation for my 2027 strategic recommendations, particularly concerning
+content investment, portfolio diversification, and long-term viewer retention.
+
+
+## Task 7: Netflix's 2027 Content Strategy
+
+### Supporting Analysis: Content Duration and Temporal Trends
+
+The following analysis classifies titles by reported runtime and
+examines how their share of total viewing hours changes across
+the seven semiannual reporting periods. Runtime is expressed
+in minutes.
+
+```{r}
+#| label: task7-duration-analysis
+#| echo: true
+
+# Examining Netflix Viewing Preferences by Content Duration
+#
+# In this section, I am conducting a longitudinal analysis
+# to investigate how Netflix audience engagement varies
+# across different categories of content duration.
+#
+# My primary objective is to determine whether shorter,
+# medium-length, or longer programming accounts for a
+# greater proportion of reported viewing hours and whether
+# these preferences have shifted across reporting periods.
+#
+# Rather than aggregating observations across the entire
+# dataset, I am preserving their temporal structure to
+# examine changes in viewing behavior between 2023H1
+# and 2026H1.
+#
+# This distinction is particularly important because
+# cumulative engagement totals may obscure changes
+# in the relative popularity of different content lengths.
+#
+# By examining duration-specific viewing shares, I am
+# establishing an empirical foundation for evaluating
+# the strategic relevance of shorter, bite-sized content
+# relative to longer-form programming.
+
+
+# Loading the Libraries Required for My Duration Analysis
+#
+# I am loading tidyverse to facilitate data filtering,
+# classification, aggregation, and temporal comparisons.
+#
+# I am incorporating gt to construct professionally
+# formatted tables that communicate my analytical findings.
+#
+# Additionally, I am loading scales to support consistent
+# numerical formatting, particularly when presenting
+# proportional viewing shares as percentages.
+
+library(tidyverse)
+library(gt)
+library(scales)
+
+
+# Preparing and Classifying Content According to Runtime
+#
+# I am initially filtering the dataset to retain only
+# observations with valid, positive runtime values.
+#
+# This restriction ensures that missing or nonpositive
+# durations do not interfere with my classification
+# of content into analytically meaningful categories.
+#
+# I am then constructing a new variable named
+# duration_category using case_when().
+#
+# Specifically, I am distinguishing three categories:
+#
+# Short: Content lasting 60 minutes or less.
+# Medium: Content lasting more than 60 but no more than 120 minutes.
+# Long: Content exceeding 120 minutes.
+#
+# These thresholds provide a standardized framework
+# for comparing audience engagement across different
+# content lengths.
+#
+# I recognize that these categories represent an
+# operational classification rather than an official
+# Netflix content taxonomy.
+#
+# Nevertheless, this classification allows me to
+# examine whether audience attention is concentrated
+# among relatively brief productions or longer
+# viewing experiences.
+
+duration_trends <- NETFLIX_DATA |>
+  filter(
+    !is.na(runtime),
+    runtime > 0
+  ) |>
+  mutate(
+    duration_category = case_when(
+      runtime <= 60 ~ "Short (60 minutes or less)",
+      runtime <= 120 ~ "Medium (61-120 minutes)",
+      TRUE ~ "Long (over 120 minutes)"
+    )
+  ) |>
+
+
+  # Aggregating Viewing Hours by Period and Duration Category
+  #
+  # I am grouping observations by reporting period
+  # and duration category to calculate the cumulative
+  # viewing hours associated with each classification.
+  #
+  # I am using summarise() to aggregate the hours_viewed
+  # variable while excluding missing observations.
+  #
+  # This calculation establishes the absolute magnitude
+  # of audience engagement attributable to each
+  # duration category within a specific reporting period.
+  #
+  # I am also removing the grouping structure following
+  # aggregation to prepare the data for subsequent
+  # proportional calculations.
+
+  group_by(period, duration_category) |>
+  summarise(
+    hours = sum(hours_viewed, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+
+
+  # Calculating the Relative Share of Viewing Hours
+  #
+  # I am regrouping the aggregated observations by
+  # reporting period to calculate the proportional
+  # contribution of each duration category.
+  #
+  # Specifically, I am dividing the viewing hours
+  # associated with each category by the combined
+  # viewing hours of all eligible duration categories
+  # within the same reporting period.
+  #
+  # This calculation produces viewing_share, which
+  # represents the fraction of reported engagement
+  # attributable to a particular content duration.
+  #
+  # By standardizing engagement as a proportion,
+  # I am reducing the influence of differences in
+  # overall viewing volume between reporting periods.
+  #
+  # This approach enables me to identify relative
+  # changes in audience consumption patterns rather
+  # than interpreting absolute viewing-hour totals
+  # as direct evidence of changing preferences.
+  #
+  # Finally, I am removing the grouping structure
+  # to facilitate subsequent data transformations.
+
+  group_by(period) |>
+  mutate(
+    viewing_share = hours / sum(hours)
+  ) |>
+  ungroup()
+
+
+# Restructuring Duration-Specific Viewing Shares
+#
+# I am transforming my aggregated results into a
+# comparative table that displays the viewing share
+# of each duration category across reporting periods.
+#
+# First, I am selecting the reporting period,
+# duration classification, and corresponding
+# proportional viewing measure.
+#
+# Next, I am using pivot_wider() to convert the
+# dataset from long format into wide format.
+#
+# This transformation creates separate columns
+# for short, medium, and long content, allowing
+# me to compare their respective viewing shares
+# within each reporting period.
+#
+# I am also specifying values_fill = 0 to assign
+# zero to any missing period-category combination
+# introduced during the restructuring process.
+#
+# Finally, I am arranging the observations
+# chronologically to facilitate the examination
+# of temporal changes in content consumption.
+
+duration_table <- duration_trends |>
+  select(
+    period,
+    duration_category,
+    viewing_share
+  ) |>
+  pivot_wider(
+    names_from = duration_category,
+    values_from = viewing_share,
+    values_fill = 0
+  ) |>
+  arrange(period)
+
+
+# Constructing a Comparative Table of Viewing Preferences
+#
+# I am presenting the resulting duration-specific
+# viewing shares using the gt package.
+#
+# My objective is to communicate the relative
+# distribution of audience engagement across
+# short, medium, and long programming.
+#
+# By displaying these categories alongside one
+# another, I am facilitating the identification
+# of potential changes in viewing preferences
+# across successive reporting periods.
+
+duration_table |>
+  gt() |>
+
+
+  # Establishing the Table Title and Analytical Context
+  #
+  # I am assigning a descriptive title that reflects
+  # the central focus of my duration analysis.
+  #
+  # I am also incorporating a subtitle to clarify
+  # that the reported values represent percentages
+  # of viewing hours rather than absolute totals.
+  #
+  # This distinction is essential for interpreting
+  # changes in the relative distribution of
+  # engagement across content categories.
+
+  tab_header(
+    title = "Netflix Viewing Preferences by Content Duration",
+    subtitle = "Percentage of viewing hours by reporting period"
+  ) |>
+
+
+  # Standardizing the Reporting Period Column Label
+  #
+  # I am replacing the underlying period variable
+  # name with a more descriptive heading.
+  #
+  # This adjustment improves readability and
+  # maintains consistency with the presentation
+  # conventions adopted throughout my report.
+
+  cols_label(
+    period = "Reporting Period"
+  ) |>
+
+
+  # Formatting Duration-Specific Viewing Shares
+  #
+  # I am converting the proportional viewing
+  # measures into percentage format.
+  #
+  # I am retaining two decimal places to provide
+  # sufficient precision for identifying relatively
+  # small changes in audience engagement.
+  #
+  # Because the categories collectively represent
+  # all observations with valid positive runtimes,
+  # their shares should sum to approximately
+  # 100 percent within each reporting period,
+  # subject to numerical rounding.
+
+  fmt_percent(
+    columns = -period,
+    decimals = 2
+  ) |>
+
+
+  # Aligning the Table with My Quarto Report Layout
+  #
+  # Finally, I am aligning the table to the left
+  # to maintain visual consistency with the
+  # preceding analytical tables.
+  #
+  # This formatting decision contributes to
+  # a coherent presentation of my findings.
+
+  tab_options(
+    table.align = "left"
+  )
+
+
+# Comparing Duration Preferences Between 2023H1 and 2026H1
+#
+# I am extending my analysis by explicitly comparing
+# the earliest and latest reporting periods represented
+# in my dataset.
+#
+# My objective is to quantify how the relative share
+# of viewing hours associated with each duration
+# category has changed over the observation window.
+#
+# Rather than relying exclusively on visual inspection
+# of the preceding table, I am calculating numerical
+# differences in percentage points.
+#
+# This approach provides a more precise measure of
+# changes in the composition of viewing engagement.
+
+
+# Isolating the Initial and Final Reporting Periods
+#
+# I am filtering duration_trends to retain observations
+# associated with 2023H1 and 2026H1.
+#
+# I am then selecting the reporting period,
+# duration category, and viewing share.
+#
+# Next, I am restructuring the observations into
+# a wide format so that the initial and final
+# viewing shares appear in separate columns.
+#
+# I am calculating change_pp by subtracting the
+# initial viewing share from the final viewing
+# share and multiplying the difference by 100.
+#
+# This transformation expresses changes in
+# percentage points rather than relative
+# percentage growth.
+#
+# A positive result indicates that a duration
+# category gained a larger share of total
+# viewing hours, whereas a negative result
+# indicates a reduction in its relative share.
+
+duration_change <- duration_trends |>
+  filter(
+    period %in% c("2023H1", "2026H1")
+  ) |>
+  select(
+    period,
+    duration_category,
+    viewing_share
+  ) |>
+  pivot_wider(
+    names_from = period,
+    values_from = viewing_share,
+    values_fill = 0
+  ) |>
+  mutate(
+    change_pp = 100 * (`2026H1` - `2023H1`)
+  )
+
+
+# Extracting the Initial Viewing Share of Short Content
+#
+# I am isolating the short-duration category
+# to establish its proportion of viewing hours
+# during the first reporting period.
+#
+# This value provides the baseline against
+# which I will evaluate subsequent changes
+# in short-form content engagement.
+
+short_start <- duration_change |>
+  filter(
+    duration_category == "Short (60 minutes or less)"
+  ) |>
+  pull(`2023H1`)
+
+
+# Extracting the Final Viewing Share of Short Content
+#
+# I am retrieving the corresponding viewing
+# share for short-duration programming in 2026H1.
+#
+# By comparing this value with the initial
+# reporting-period share, I can determine
+# whether shorter content gained or lost
+# relative audience engagement over time.
+
+short_end <- duration_change |>
+  filter(
+    duration_category == "Short (60 minutes or less)"
+  ) |>
+  pull(`2026H1`)
+
+
+# Extracting the Initial Viewing Share of Long Content
+#
+# I am identifying the proportion of viewing
+# hours attributable to programming exceeding
+# 120 minutes during 2023H1.
+#
+# This measure establishes the baseline for
+# evaluating changes in longer-form content
+# engagement across the reporting window.
+
+long_start <- duration_change |>
+  filter(
+    duration_category == "Long (over 120 minutes)"
+  ) |>
+  pull(`2023H1`)
+
+
+# Extracting the Final Viewing Share of Long Content
+#
+# I am retrieving the corresponding proportion
+# of viewing hours associated with long-duration
+# programming during 2026H1.
+#
+# This value enables me to assess whether
+# longer content increased or decreased
+# its relative contribution to engagement.
+
+long_end <- duration_change |>
+  filter(
+    duration_category == "Long (over 120 minutes)"
+  ) |>
+  pull(`2026H1`)
+
+
+# Quantifying Changes in Short- and Long-Content Engagement
+#
+# I am calculating the difference between the
+# final and initial viewing shares for both
+# short- and long-duration programming.
+#
+# I am multiplying each difference by 100
+# to express the resulting change in
+# percentage points.
+#
+# These calculations provide direct numerical
+# measures of how the relative importance
+# of shorter and longer programming evolved
+# between 2023H1 and 2026H1.
+#
+# I am storing these results separately
+# to facilitate their incorporation into
+# my subsequent analytical interpretation.
+
+short_change <- 100 * (short_end - short_start)
+
+long_change <- 100 * (long_end - long_start)
+
+
+# Examining Changes in Total Reported Viewing Hours
+#
+# In addition to evaluating proportional shifts
+# in content duration preferences, I am examining
+# changes in Netflix's overall reported viewing activity.
+#
+# My objective is to distinguish changes in the
+# composition of viewing engagement from changes
+# in the absolute magnitude of viewing hours.
+#
+# This distinction is analytically important
+# because a duration category may experience
+# an increase in absolute viewing hours while
+# simultaneously accounting for a smaller
+# proportion of total engagement.
+
+
+# Aggregating Total Viewing Hours by Reporting Period
+#
+# I am grouping my Netflix dataset by reporting
+# period and calculating the cumulative viewing
+# hours recorded within each interval.
+#
+# I am excluding missing observations during
+# aggregation to maintain numerical consistency.
+#
+# I am also removing the grouping structure
+# and arranging the results chronologically.
+#
+# This procedure establishes a period-level
+# summary of reported audience engagement.
+
+period_viewing <- NETFLIX_DATA |>
+  group_by(period) |>
+  summarise(
+    total_hours = sum(hours_viewed, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(period)
+
+
+# Establishing the Initial Viewing-Hour Baseline
+#
+# I am extracting the total reported viewing
+# hours associated with 2023H1.
+#
+# This value serves as the baseline for
+# evaluating the relative change in overall
+# engagement across the observation window.
+
+hours_start <- period_viewing |>
+  filter(period == "2023H1") |>
+  pull(total_hours)
+
+
+# Identifying Total Viewing Hours in the Latest Period
+#
+# I am retrieving the total reported viewing
+# hours associated with 2026H1.
+#
+# This measure provides the endpoint for
+# my comparison of aggregate engagement
+# between the initial and final periods.
+
+hours_end <- period_viewing |>
+  filter(period == "2026H1") |>
+  pull(total_hours)
+
+
+# Calculating the Relative Change in Total Viewing Hours
+#
+# I am dividing the final period's total
+# viewing hours by the initial period's
+# corresponding total and subtracting one.
+#
+# This calculation produces the proportional
+# change in reported engagement between
+# 2023H1 and 2026H1.
+#
+# A positive result indicates an increase
+# in total reported viewing hours, whereas
+# a negative result indicates a decrease.
+#
+# Unlike my duration-specific calculations,
+# which measure changes in percentage points,
+# this metric represents a relative percentage
+# change when multiplied by 100.
+#
+# I am retaining the result in decimal form
+# for subsequent percentage formatting.
+
+total_hours_change <- hours_end / hours_start - 1
+
+
+# Identifying the Dominant Duration Category in 2026H1
+#
+# Finally, I am determining which content
+# duration category accounted for the largest
+# proportion of reported viewing hours
+# during the latest reporting period.
+#
+# I am filtering duration_trends to isolate
+# observations associated with 2026H1.
+#
+# Next, I am using slice_max() to identify
+# the category with the highest viewing_share.
+#
+# I am specifying n = 1 and with_ties = FALSE
+# to retain a single leading category.
+#
+# I am then extracting its descriptive label
+# using pull().
+#
+# This calculation allows me to identify
+# whether short, medium, or long programming
+# represented the dominant share of reported
+# viewing engagement in the latest period.
+#
+# I am storing this classification in
+# leading_category for incorporation into
+# my final interpretation and strategic
+# recommendations concerning Netflix's
+# content portfolio in 2027.
+
+leading_category <- duration_trends |>
+  filter(period == "2026H1") |>
+  slice_max(
+    viewing_share,
+    n = 1,
+    with_ties = FALSE
+  ) |>
+  pull(duration_category)
+```
+
+
+
+### Corporate Strategy Memorandum
+
+**To:** Executive Leadership and Content Strategy Division  
+**From:** Leonard Kiplagat, Data Scientist  
+**Date:** October 15, 2026  
+**Subject:** 2027 Content Strategy: Reassessing Programming Duration, Audience Engagement, and Investment Priorities
+
+#### Executive Recommendation
+
+Based on my examination of historical engagement data, I recommend a more calibrated approach to content investment in 2027, one that reconciles the accessibility of shorter programming with the enduring appeal of long-form productions. I would caution against concentrating investment disproportionately in either category. Instead, the organisation should adopt a diversified allocation framework grounded in observable consumption patterns, financial efficiency, and the demonstrated longevity of established franchises. The central strategic consideration is not simply how much content company produces, but whether its programming investments correspond with the evolving preferences of its audience.
+
+#### Evolving Audience Preferences: Shorter Versus Longer Content
+
+The proliferation of competing streaming platforms, social media, and other digital entertainment alternatives has fundamentally altered how consumers allocate their increasingly fragmented attention. In this environment, programming duration warrants greater strategic scrutiny. Shorter productions offer convenience and relatively modest time commitments, whereas extended narratives can cultivate deeper audience attachment, encourage sustained consumption, and reinforce franchise loyalty.
+
+My analysis of engagement reports reveals measurable changes in the distribution of viewing hours across content durations. In the first half of 2023, titles with reported runtimes of 60 minutes or less represented `r scales::percent(short_start, accuracy = 0.01)` of viewing hours among records with valid runtimes. By 2026H1, this proportion stood at `r scales::percent(short_end, accuracy = 0.01)`, reflecting a change of `r round(short_change, 2)` percentage points.
+
+Meanwhile, programming exceeding 120 minutes accounted for `r scales::percent(long_start, accuracy = 0.01)` of comparable engagement in 2023H1, compared with `r scales::percent(long_end, accuracy = 0.01)` in 2026H1, representing a change of `r round(long_change, 2)` percentage points.
+
+What I find particularly consequential is the need to distinguish genuine shifts in audience preferences from fluctuations in content availability. A change in viewing share does not necessarily establish a corresponding change in consumer demand. Release schedules, the availability of popular franchises, and differences in catalog composition may also influence these outcomes. Furthermore, reported runtime does not directly measure the length of individual viewing sessions, particularly for episodic programming.
+
+#### Temporal Trends and Strategic Implications
+
+Beyond content duration, I examined the broader trajectory of Netflix's reported viewing activity. Total engagement changed from approximately `r scales::comma(round(hours_start / 1e9, 2))` billion hours in 2023H1 to `r scales::comma(round(hours_end / 1e9, 2))` billion hours in 2026H1, representing a `r scales::percent(total_hours_change, accuracy = 0.01)` change.
+
+Notably, **`r leading_category`** accounted for the largest proportion of viewing hours in 2026H1 among titles with valid runtime information. Although this finding offers a useful indication of prevailing consumption patterns, I would not interpret it as sufficient justification for reallocating resources exclusively toward that category.
+
+From my perspective, the more consequential issue is whether observed changes represent persistent behavioral tendencies or temporary responses to particular releases. Aggregating engagement across several years risks obscuring emerging patterns, especially when exceptionally successful productions exert a disproportionate influence on historical totals. For this reason, I consider period-specific comparisons indispensable to sound investment decisions.
+
+#### Strategic Recommendations for 2027 and Beyond
+
+I would prioritize three interrelated initiatives.
+
+**First, diversify programming investments without compromising financial discipline.** The organisation should maintain a balanced portfolio of shorter productions, feature-length films, and extended series. However, allocation decisions should be informed by more than audience reach or aggregate viewing hours. Production expenditure, engagement efficiency, franchise potential, and the capacity to sustain viewer interest should collectively determine investment priorities.
+
+**Second, institutionalize longitudinal performance evaluation.** I recommend a semiannual assessment framework that examines changes in viewing-hour distributions, title-level engagement, and the persistence of established franchises. Such evaluations would help the company distinguish enduring consumption patterns from episodic fluctuations associated with high-profile releases. More importantly, they would provide management with a stronger empirical basis for adjusting programming investments as audience behavior evolves.
+
+**Third, expand experimentation while preserving proven programming assets.** The organisation should selectively test shorter episodic formats and limited-series productions without undermining longer narratives that consistently generate substantial engagement. I would evaluate these initiatives using viewing hours relative to production expenditure, completion rates where available, and audience retention across successive reporting periods. This would allow the company to assess not merely whether content attracts attention, but whether that attention translates into sustainable economic value.
+
+#### Conclusion
+
+My principal takeaway from this analysis is that the organisation competitive position in 2027 will depend less on favoring a particular programming duration and more on its ability to translate evolving consumption patterns into disciplined investment decisions. Shorter content may offer accessibility, while longer productions can reinforce sustained engagement and franchise continuity. Neither format should be privileged without sufficient empirical justification.
+
+Ultimately, I believe the organisation would be better served by a diversified, financially accountable content strategy that accommodates changing audience preferences while preserving the programming assets responsible for its enduring competitive differentiation.
+
+
+## AI Usage Statement
+
+::: {.callout-note collapse="true"}
+
+## Generative AI Disclosure
+
+I utilized OpenAI's ChatGPT as a supplementary resource throughout this project,
+primarily to troubleshoot R and Quarto code, clarify technical requirements,
+structure exploratory analyses. Its contribution was largely confined to
+technical guidance and methodological clarification.
+
+The underlying analysis was grounded in Netflix's publicly available engagement
+reports, with quantitative findings derived computationally through R rather
+than generated or assumed by AI. I independently evaluated the analytical 
+procedures, examined the resulting outputs, and exercised my own judgment in
+formulating the interpretations.I take responsibility for the accuracy, 
+methodological integrity, and final presentation of the submission.
+:::
+
+
+
