@@ -2861,7 +2861,7 @@ Ultimately, I believe the organisation would be better served by a diversified, 
 
 ::: {.callout-note collapse="true"}
 
-## Generative AI Disclosure
+## AI Usage Statement
 
 I utilized OpenAI's ChatGPT as a supplementary resource throughout this project,
 primarily to troubleshoot R and Quarto code, clarify technical requirements,
